@@ -40,12 +40,26 @@ export function AuthPage() {
         }
       }
     } catch (err: any) {
-      let message = err.message;
-      try {
-        const parsed = JSON.parse(err.message);
-        if (parsed.error) message = parsed.error;
-      } catch (e) {
-        // Not a JSON error, keep original message
+      console.error("Auth Error:", err);
+      let message = "An unexpected error occurred during authentication.";
+      
+      // Handle Firebase Auth errors specifically
+      if (err.code === 'auth/unauthorized-domain') {
+        message = "This domain is not authorized in your Firebase project. Please add your Vercel domain to the 'Authorized domains' list in the Firebase Console (Authentication > Settings).";
+      } else if (err.code === 'auth/popup-blocked') {
+        message = "The sign-in popup was blocked by your browser. Please allow popups for this site and try again.";
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        message = "The sign-in popup was closed before completion. Please try again.";
+      } else if (err.code === 'auth/internal-error') {
+        message = "An internal authentication error occurred. Please refresh and try again.";
+      } else if (err.message) {
+        message = err.message;
+        try {
+          const parsed = JSON.parse(err.message);
+          if (parsed.error) message = parsed.error;
+        } catch (e) {
+          // Keep the message as is if not JSON
+        }
       }
       setError(message);
     } finally {
