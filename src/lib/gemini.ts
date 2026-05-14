@@ -16,6 +16,16 @@ const SCHEMA = {
 
 export async function getFeedback(taskType: string, prompt: string, userInput: string, imageUrl?: string): Promise<AIResult> {
   const modelName = "gemini-3-flash-preview";
+
+  if (!process.env.GEMINI_API_KEY) {
+    console.error("GEMINI_API_KEY is missing. Please add it to your environment variables.");
+    return {
+      score: 0,
+      grammarFeedback: "API Error: Assessment system is not configured.",
+      vocabularyFeedback: "Missing GEMINI_API_KEY environment variable.",
+      generalFeedback: "If you are the developer: Please ensure you have added the `GEMINI_API_KEY` to your deployment environment variables (e.g., in Vercel settings)."
+    };
+  }
   
   let systemInstruction = "";
   if (taskType === "PART1") {
@@ -58,3 +68,4 @@ export async function getFeedback(taskType: string, prompt: string, userInput: s
     };
   }
 }
+

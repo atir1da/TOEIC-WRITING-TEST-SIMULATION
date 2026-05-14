@@ -15,6 +15,7 @@ export interface Part2Question {
   id: string;
   emailContext: string;
   requirements: string[];
+  type: 'personal' | 'business';
 }
 
 export interface Part3Question {
@@ -27,4 +28,12 @@ export interface AIResult {
   grammarFeedback: string;
   vocabularyFeedback: string;
   generalFeedback: string;
+}
+
+export interface HistoryEntry {
+  id: string;
+  date: string;
+  type: 'Module' | 'Full Test';
+  part: TaskPart | 'ALL';
+  results: (AIResult | null)[];
 }

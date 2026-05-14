@@ -56,9 +56,10 @@ export function Logo({ className = "w-12 h-12" }: { className?: string }) {
         <line x1="40" y1="100" x2="160" y2="100" stroke="#DC2626" strokeWidth="12" />
       </g>
 
-      {/* Letters E C */}
-      <text x="100" y="75" textAnchor="middle" fill="white" fontSize="24" fontWeight="bold" fontFamily="serif">E</text>
-      <text x="100" y="95" textAnchor="middle" fill="white" fontSize="24" fontWeight="bold" fontFamily="serif">C</text>
+      {/* Letters E C T */}
+      <text x="100" y="65" textAnchor="middle" fill="white" fontSize="22" fontWeight="bold" fontFamily="serif">E</text>
+      <text x="100" y="85" textAnchor="middle" fill="white" fontSize="22" fontWeight="bold" fontFamily="serif">C</text>
+      <text x="100" y="105" textAnchor="middle" fill="white" fontSize="22" fontWeight="bold" fontFamily="serif">T</text>
 
       {/* Banner */}
       <path

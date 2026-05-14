@@ -8,9 +8,10 @@
         "uid": { "type": "string" },
         "email": { "type": "string", "format": "email" },
         "displayName": { "type": "string" },
+        "englishLevel": { "type": "string", "enum": ["Basic", "Intermediate", "Advanced"] },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["uid", "email", "createdAt"]
+      "required": ["uid", "email", "createdAt", "englishLevel"]
     },
     "attempts": {
       "title": "Attempt",

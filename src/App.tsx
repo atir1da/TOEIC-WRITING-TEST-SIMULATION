@@ -19,12 +19,11 @@ import {
   AlertCircle,
   LogOut,
   User as UserIcon,
-  XCircle
+  XCircle,
+  ShieldAlert
 } from 'lucide-react';
-import { onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { auth } from './lib/firebase';
 import { AuthPage } from './components/AuthPage';
-import { TaskPart, AIResult } from './types';
+import { TaskPart, AIResult, HistoryEntry } from './types';
 import { 
   PART1_QUESTIONS, 
   PART2_QUESTIONS, 
@@ -37,6 +36,11 @@ import { getFeedback } from './lib/gemini';
 import { Logo } from './components/Logo';
 import { cn } from './lib/utils';
 import Markdown from 'react-markdown';
+
+interface UserProfile {
+  displayName: string;
+  englishLevel: string;
+}
 
 function LoadingOverlay({ message = "Loading Page" }: { message?: string }) {
   return (
@@ -51,7 +55,7 @@ function LoadingOverlay({ message = "Loading Page" }: { message?: string }) {
       </div>
       <div className="space-y-3">
         <h2 className="text-2xl font-black text-white uppercase tracking-widest">{message}</h2>
-        <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-[0.4em]">English Committee Team</p>
+        <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-[0.4em]">English Care Team</p>
       </div>
       <div className="mt-12 flex gap-2">
         {[0, 1, 2].map((i) => (
@@ -116,34 +120,97 @@ function ConfirmationModal({
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [currentPart, setCurrentPart] = useState<TaskPart | null>(null);
   const [isStarted, setIsStarted] = useState(false);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [isRealTest, setIsRealTest] = useState(false);
   const [isShowingSummary, setIsShowingSummary] = useState(false);
-  const [modalMode, setModalMode] = useState<'abandon' | 'dashboard' | 'logout'>('abandon');
+  const [modalMode, setModalMode] = useState<'abandon' | 'dashboard' | 'logout' | 'retry'>('abandon');
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [resetKey, setResetKey] = useState(0);
+  const [isWindowFocused, setIsWindowFocused] = useState(true);
+  const [history, setHistory] = useState<HistoryEntry[]>(() => {
+    const stored = localStorage.getItem('toeic_history');
+    return stored ? JSON.parse(stored) : [];
+  });
+  const [fullTestResults, setFullTestResults] = useState<(AIResult | null)[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [selectedHistoryEntry, setSelectedHistoryEntry] = useState<HistoryEntry | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setAuthLoading(false);
-    });
-    return () => unsubscribe();
+    const handleBlur = () => {
+      if (isRealTest && isStarted) setIsWindowFocused(false);
+    };
+    const handleFocus = () => setIsWindowFocused(true);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isRealTest || !isStarted) return;
+      
+      // Attempt to catch PrintScreen (some systems report it as 'PrintScreen' or 'F13')
+      if (e.key === 'PrintScreen') {
+        setIsWindowFocused(false);
+      }
+    };
+
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('keyup', handleKeyDown);
+    
+    return () => {
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('keyup', handleKeyDown);
+    };
+  }, [isRealTest, isStarted]);
+
+  useEffect(() => {
+    // Check for local user profile on startup
+    const storedUser = localStorage.getItem('toeic_user');
+    if (storedUser) {
+      try {
+        setUserProfile(JSON.parse(storedUser));
+      } catch (e) {
+        console.error("Failed to parse local user:", e);
+        localStorage.removeItem('toeic_user');
+      }
+    }
+    setAuthLoading(false);
   }, []);
 
+  const handleLocalLogin = (profile: UserProfile) => {
+    setUserProfile(profile);
+  };
+
   const handleLogout = async () => {
-    try {
-      await signOut(auth);
-      setCurrentPart(null);
-      setIsStarted(false);
-    } catch (err) {
-      console.error("Logout error:", err);
-    }
+    localStorage.removeItem('toeic_user');
+    setUserProfile(null);
+    setCurrentPart(null);
+    setIsStarted(false);
+  };
+
+  const addHistoryEntry = (entry: Omit<HistoryEntry, 'id' | 'date'>) => {
+    const newEntry: HistoryEntry = {
+      ...entry,
+      id: Math.random().toString(36).substr(2, 9),
+      date: new Date().toISOString(),
+    };
+    const updatedHistory = [newEntry, ...history];
+    setHistory(updatedHistory);
+    localStorage.setItem('toeic_history', JSON.stringify(updatedHistory));
   };
 
   const renderContent = () => {
+    if (showHistory) {
+      return (
+        <HistoryView 
+          history={history} 
+          onClose={() => setShowHistory(false)} 
+          onViewEntry={(entry) => setSelectedHistoryEntry(entry)}
+        />
+      );
+    }
+
     if (!currentPart) {
       return (
         <LandingPage 
@@ -164,11 +231,20 @@ export default function App() {
 
     if (!isStarted) {
       return (
-        <StartScreen 
-          part={currentPart} 
-          onBack={() => setCurrentPart(null)} 
-          onStart={() => setIsStarted(true)} 
-        />
+        <div className="w-full max-w-4xl mx-auto px-4 sm:px-6">
+          <StartScreen 
+            part={currentPart} 
+            onBack={() => {
+              if (isRealTest) {
+                setModalMode('abandon');
+                setShowExitConfirm(true);
+              } else {
+                setCurrentPart(null);
+              }
+            }} 
+            onStart={() => setIsStarted(true)} 
+          />
+        </div>
       );
     }
 
@@ -176,8 +252,9 @@ export default function App() {
       case TaskPart.PART1:
         return (
           <Part1Exercise 
+            key={`p1-${resetKey}`}
             isRealTest={isRealTest}
-            onFinish={() => handleFinish()} 
+            onFinish={(res) => handleFinish(res)} 
             onShowSummary={() => setIsShowingSummary(true)}
             setShowExitConfirm={setShowExitConfirm} 
             setModalMode={setModalMode}
@@ -186,8 +263,9 @@ export default function App() {
       case TaskPart.PART2:
         return (
           <Part2Exercise 
+            key={`p2-${resetKey}`}
             isRealTest={isRealTest}
-            onFinish={() => handleFinish()} 
+            onFinish={(res) => handleFinish(res)} 
             onShowSummary={() => setIsShowingSummary(true)}
             setShowExitConfirm={setShowExitConfirm} 
             setModalMode={setModalMode}
@@ -196,8 +274,9 @@ export default function App() {
       case TaskPart.PART3:
         return (
           <Part3Exercise 
+            key={`p3-${resetKey}`}
             isRealTest={isRealTest}
-            onFinish={() => handleFinish()} 
+            onFinish={(res) => handleFinish(res)} 
             onShowSummary={() => setIsShowingSummary(true)}
             setShowExitConfirm={setShowExitConfirm} 
             setModalMode={setModalMode}
@@ -208,25 +287,43 @@ export default function App() {
     }
   };
 
-  const handleFinish = (isAbandon = false) => {
+  const handleFinish = (results?: (AIResult | null)[], isAbandon = false) => {
     setIsShowingSummary(false);
     if (isRealTest) {
       if (isAbandon) {
         setIsRealTest(false);
         setIsStarted(false);
         setCurrentPart(null);
+        setFullTestResults([]);
       } else if (currentPart === TaskPart.PART1) {
+        if (results) setFullTestResults(results);
         setCurrentPart(TaskPart.PART2);
         setIsStarted(false);
       } else if (currentPart === TaskPart.PART2) {
+        if (results) setFullTestResults(prev => [...prev, ...results]);
         setCurrentPart(TaskPart.PART3);
         setIsStarted(false);
       } else {
+        // Finishing Part 3
+        const finalResults = results ? [...fullTestResults, ...results] : fullTestResults;
+        addHistoryEntry({
+          type: 'Full Test',
+          part: 'ALL',
+          results: finalResults
+        });
         setIsRealTest(false);
         setIsStarted(false);
         setCurrentPart(null);
+        setFullTestResults([]);
       }
     } else {
+      if (!isAbandon && results && currentPart) {
+        addHistoryEntry({
+          type: 'Module',
+          part: currentPart,
+          results
+        });
+      }
       setIsStarted(false);
       setCurrentPart(null);
     }
@@ -247,7 +344,7 @@ export default function App() {
           </div>
           <div className="space-y-2">
             <h1 className="text-xl font-black text-white uppercase tracking-widest leading-none">Loading Page</h1>
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.3em]">English Committee Team</p>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.3em]">English Care Team</p>
           </div>
           <div className="flex items-center justify-center gap-1.5">
             <div className="w-1 h-1 bg-indigo-500 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
@@ -259,74 +356,165 @@ export default function App() {
     );
   }
 
-  if (!user) {
-    return <AuthPage />;
+  if (!userProfile) {
+    return <AuthPage onLogin={handleLocalLogin} />;
   }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans selection:bg-indigo-100 selection:text-indigo-900 overflow-x-hidden">
-      <nav className="min-h-20 bg-slate-900 text-white border-b border-slate-700 sticky top-0 z-50 flex items-center shrink-0 py-4">
-        <div className="max-w-6xl mx-auto w-full px-4 sm:px-8 flex flex-col md:flex-row items-center justify-between gap-4">
-          <div className="flex items-center justify-between w-full md:w-auto">
+      <AnimatePresence>
+        {!isWindowFocused && isRealTest && isStarted && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-slate-900/95 backdrop-blur-xl flex flex-col items-center justify-center text-center p-6"
+          >
+            <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mb-6 border border-red-500/30">
+              <ShieldAlert className="w-10 h-10 text-red-500" />
+            </div>
+            <h2 className="text-3xl font-black text-white tracking-tighter mb-2">SCREEN SHIELD ACTIVE</h2>
+            <p className="text-slate-400 font-bold max-w-md text-sm">Content is hidden to prevent unauthorized screen captures. Please return focus to this window to continue your Full Real Test.</p>
+            <div className="mt-8 px-6 py-3 bg-white/5 border border-white/10 rounded flex items-center gap-3">
+              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">Monitoring Active Session</span>
+            </div>
             <button 
-              onClick={() => handleFinish()}
-              className="flex items-center gap-3 hover:opacity-80 transition-opacity"
+              onClick={() => setIsWindowFocused(true)}
+              className="mt-8 text-indigo-400 text-xs font-black uppercase tracking-[0.2em] hover:text-white transition-colors"
+            >
+              Resume Test
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <nav className="min-h-20 bg-slate-900 text-white border-b border-slate-700 sticky top-0 z-50 flex items-center shrink-0 py-2 sm:py-4">
+        <div className="max-w-6xl mx-auto w-full px-4 sm:px-8 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <button 
+              onClick={() => {
+                if (isStarted || isRealTest) {
+                  setModalMode('abandon');
+                  setShowExitConfirm(true);
+                } else if (currentPart) {
+                  setModalMode('dashboard');
+                  setShowExitConfirm(true);
+                } else {
+                  handleFinish(undefined, false);
+                }
+              }}
+              className="flex items-center gap-2 sm:gap-3 hover:opacity-80 transition-opacity"
             >
               <div className="w-8 h-8 sm:w-10 sm:h-10 bg-white rounded flex items-center justify-center shrink-0 border border-slate-700 overflow-hidden shadow-lg shadow-black/20">
                 <Logo className="w-full h-full p-1" />
               </div>
-              <div className="flex flex-col items-start leading-[1.1]">
-                <span className="text-xs sm:text-sm font-black uppercase tracking-widest text-white">ENGLISH COMMITTEE</span>
-                <span className="text-[8px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-tight">EDUCATION DIVISION</span>
+              <div className="hidden xs:flex flex-col items-start leading-[1.1]">
+                <span className="text-[10px] sm:text-sm font-black uppercase tracking-widest text-white truncate">ENGLISH CARE</span>
+                <span className="text-[7px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-tight truncate">EDUCATE FOR EVERYONE</span>
               </div>
-            </button>
-
-            <button 
-              onClick={() => {
-                setModalMode('logout');
-                setShowExitConfirm(true);
-              }}
-              className="md:hidden p-2 text-slate-400 hover:text-white transition-colors"
-            >
-              <LogOut className="w-5 h-5" />
             </button>
           </div>
           
           {isRealTest && !isShowingSummary && (
-            <div className="flex flex-wrap justify-center items-center gap-4 sm:gap-8 text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-slate-400">
+            <div className="hidden lg:flex items-center gap-4 xl:gap-8 text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-slate-400">
               <span className={cn("transition-colors", currentPart === TaskPart.PART1 && "text-indigo-400")}>01. PICTURE</span>
               <span className={cn("transition-colors", currentPart === TaskPart.PART2 && "text-indigo-400")}>02. REQUEST</span>
               <span className={cn("transition-colors", currentPart === TaskPart.PART3 && "text-indigo-400")}>03. ESSAY</span>
             </div>
           )}
 
-          <div className="hidden md:flex items-center gap-4">
-            <div className="flex flex-col items-end mr-2">
-              <span className="text-[10px] font-black text-white leading-none mb-1">{user.displayName || user.email?.split('@')[0]}</span>
-              <span className="text-[8px] font-bold text-indigo-400 uppercase tracking-widest">Active Student</span>
+          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+            <div className="relative">
+              <button 
+                onClick={() => setShowProfileMenu(!showProfileMenu)}
+                className="flex items-center gap-2 sm:gap-4 hover:bg-slate-800 p-1 sm:p-2 rounded-xl transition-all"
+              >
+                <div className="hidden sm:flex flex-col items-end max-w-[120px]">
+                  <span className="text-[10px] font-black text-white leading-none mb-1 truncate w-full text-right">{userProfile?.displayName || 'User'}</span>
+                  <span className="text-[8px] font-bold text-indigo-400 uppercase tracking-widest leading-none truncate w-full text-right">{userProfile?.englishLevel || 'Intermediate'}</span>
+                </div>
+                <div className="w-9 h-9 sm:w-10 sm:h-10 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-black text-xs shadow-lg shadow-indigo-500/20 shrink-0">
+                  {(userProfile?.displayName || 'U').charAt(0).toUpperCase()}
+                </div>
+              </button>
+
+              <AnimatePresence>
+                {showProfileMenu && (
+                  <>
+                    <div 
+                      className="fixed inset-0 z-[60]" 
+                      onClick={() => setShowProfileMenu(false)}
+                    />
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      className="absolute right-0 mt-3 w-64 bg-white rounded-2xl shadow-2xl overflow-hidden z-[70] border border-slate-100 origin-top-right shadow-indigo-500/10"
+                    >
+                      <div className="p-5 bg-slate-50 border-b border-slate-100">
+                        <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Active Profile</div>
+                        <div className="text-sm font-bold text-slate-900 truncate">{userProfile?.displayName}</div>
+                        <div className="text-[9px] font-bold text-indigo-600 uppercase tracking-widest mt-1">{userProfile?.englishLevel} Level Student</div>
+                      </div>
+                      <div className="p-2">
+                        <button 
+                          onClick={() => {
+                            setShowProfileMenu(false);
+                            setShowHistory(true);
+                          }}
+                          className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left text-[11px] font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50 transition-colors group"
+                        >
+                          <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center group-hover:bg-indigo-100 group-hover:text-indigo-600 transition-colors">
+                            <FileText className="w-4 h-4" />
+                          </div>
+                          Report History
+                        </button>
+                        <button 
+                          onClick={() => {
+                            setShowProfileMenu(false);
+                            setModalMode('logout');
+                            setShowExitConfirm(true);
+                          }}
+                          className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left text-[11px] font-black uppercase tracking-widest text-red-600 hover:bg-red-50 transition-colors group"
+                        >
+                          <div className="w-8 h-8 rounded-lg bg-red-100 flex items-center justify-center group-hover:bg-red-200 transition-colors">
+                            <LogOut className="w-4 h-4" />
+                          </div>
+                          Sign Out Account
+                        </button>
+                      </div>
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
             </div>
-            <button 
-              onClick={() => {
-                setModalMode('logout');
-                setShowExitConfirm(true);
-              }}
-              className="p-2.5 bg-slate-800 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-all"
-              title="Sign Out"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
           </div>
         </div>
       </nav>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-8 py-6 sm:py-12">
+      <main className="max-w-6xl mx-auto px-4 sm:px-8 py-6 sm:py-12 w-full overflow-x-hidden">
+        {selectedHistoryEntry && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto pt-20 pb-10">
+            <div className="max-w-4xl w-full">
+              <Summary 
+                results={selectedHistoryEntry.results}
+                onBack={() => setSelectedHistoryEntry(null)}
+                ctaLabel="Return to History"
+                isRealTest={selectedHistoryEntry.type === 'Full Test'}
+              />
+            </div>
+          </div>
+        )}
+
         <AnimatePresence mode="wait">
           <motion.div
             key={currentPart === null ? 'landing' : isStarted ? `exercise-${currentPart}` : `start-${currentPart}`}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.3, ease: "easeInOut" }}
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.98 }}
+            transition={{ duration: 0.2 }}
+            className="w-full"
           >
             {renderContent()}
           </motion.div>
@@ -338,21 +526,28 @@ export default function App() {
         onConfirm={() => {
           if (modalMode === 'logout') {
             handleLogout();
+          } else if (modalMode === 'retry') {
+            setResetKey(prev => prev + 1);
+            setIsShowingSummary(false);
           } else {
-            handleFinish(modalMode === 'abandon');
+            handleFinish(undefined, modalMode === 'abandon');
           }
           setShowExitConfirm(false);
         }}
         onCancel={() => setShowExitConfirm(false)}
         title={
           modalMode === 'logout' ? "Sign Out?" :
-          modalMode === 'abandon' ? "Abandon Session?" : 
+          modalMode === 'retry' ? "Retry Task?" :
+          modalMode === 'abandon' ? (isRealTest ? "Abandon Real Test?" : "Abandon Session?") : 
           "Return to Dashboard?"
         }
         message={
           modalMode === 'logout' ? "Are you sure you want to sign out of your account?" :
+          modalMode === 'retry' ? "Do you want to retry this module? Your current scores and feedback for this session will be reset." :
           modalMode === 'abandon' 
-            ? "You are about to exit the current examination module. Your progress for this part will be discarded."
+            ? (isRealTest 
+                ? "A Full Real Test is currently active. If you exit now, all progress will be lost and your test result will not be saved. Do you want to abandon the test?" 
+                : "You are about to exit the current examination module. Your progress for this part will be discarded.")
             : "Do you want to go back to dashboard?"
         }
       />
@@ -360,46 +555,144 @@ export default function App() {
   );
 }
 
+function HistoryView({ history, onClose, onViewEntry }: { history: HistoryEntry[], onClose: () => void, onViewEntry: (entry: HistoryEntry) => void }) {
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 20 }}
+      className="mb-12"
+    >
+      <div className="flex items-center justify-between mb-8">
+        <div className="space-y-1">
+          <div className="text-[10px] uppercase tracking-widest font-black text-indigo-600">Performance Archive</div>
+          <h2 className="text-3xl font-black tracking-tighter text-slate-900 leading-none">Your History</h2>
+        </div>
+        <button 
+          onClick={onClose}
+          className="px-6 py-3 bg-slate-100 hover:bg-slate-200 text-slate-900 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all"
+        >
+          Close History
+        </button>
+      </div>
+
+      {history.length === 0 ? (
+        <div className="bg-white border border-slate-200 rounded-3xl p-12 text-center">
+          <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mx-auto mb-6 text-slate-400">
+            <BookOpen className="w-8 h-8" />
+          </div>
+          <h3 className="text-xl font-black text-slate-900 tracking-tight mb-2">No history found</h3>
+          <p className="text-slate-500 text-sm font-bold max-w-xs mx-auto">Complete your first module or real test to see your performance history here.</p>
+        </div>
+      ) : (
+        <div className="grid gap-4">
+          {history.map((entry) => (
+            <motion.div 
+              key={entry.id}
+              whileHover={{ x: 4 }}
+              className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-6 hover:border-indigo-200 transition-all cursor-pointer group"
+              onClick={() => onViewEntry(entry)}
+            >
+              <div className="flex items-center gap-6">
+                <div className={cn(
+                  "w-12 h-12 rounded-xl flex items-center justify-center shrink-0 shadow-lg",
+                  entry.type === 'Full Test' ? "bg-indigo-600 text-white shadow-indigo-100" : "bg-white text-indigo-600 border border-slate-100"
+                )}>
+                  {entry.type === 'Full Test' ? <Award className="w-6 h-6" /> : (
+                    entry.part === TaskPart.PART1 ? <PenTool className="w-6 h-6" /> :
+                    entry.part === TaskPart.PART2 ? <Mail className="w-6 h-6" /> :
+                    <FileText className="w-6 h-6" />
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={cn(
+                      "text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded",
+                      entry.type === 'Full Test' ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-600"
+                    )}>
+                      {entry.type}
+                    </span>
+                    {entry.part !== 'ALL' && (
+                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{entry.part}</span>
+                    )}
+                  </div>
+                  <h4 className="text-lg font-black tracking-tight text-slate-900 leading-tight">
+                    {entry.type === 'Full Test' ? 'Full Assessment Session' : (
+                      entry.part === TaskPart.PART1 ? 'Visual Description' :
+                      entry.part === TaskPart.PART2 ? 'Email Response' :
+                      'Expressive Essay'
+                    )}
+                  </h4>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight mt-1">
+                    {new Date(entry.date).toLocaleDateString(undefined, { 
+                      year: 'numeric', 
+                      month: 'long', 
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    })}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-8 justify-between sm:justify-end">
+                <div className="text-center">
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Avg Score</p>
+                  <p className="text-2xl font-black text-slate-900 tracking-tighter">
+                    {Math.round(entry.results.reduce((acc, r) => acc + (r?.score || 0), 0) / entry.results.length)}
+                  </p>
+                </div>
+                <div className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                  <ChevronRight className="w-5 h-5" />
+                </div>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
 function LandingPage({ onSelectPart, onStartRealTest }: { onSelectPart: (part: TaskPart) => void, onStartRealTest: () => void }) {
   return (
-    <div className="space-y-12">
-      <header className="max-w-3xl text-center md:text-left">
-        <div className="flex flex-col md:flex-row items-center md:items-start gap-8 mb-8">
+    <div className="space-y-12 sm:space-y-20">
+      <header className="max-w-4xl">
+        <div className="flex flex-col items-center md:items-start text-center md:text-left gap-8 mb-10">
           <motion.div 
-            className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center shadow-xl border border-slate-100 overflow-hidden shrink-0"
+            className="w-20 h-20 bg-white rounded-3xl flex items-center justify-center shadow-xl border border-slate-100 overflow-hidden shrink-0"
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}
           >
             <Logo className="w-14 h-14" />
           </motion.div>
+          
+          <div className="space-y-6">
+            <motion.h1 
+              className="text-3xl sm:text-5xl md:text-6xl lg:text-7xl font-black tracking-tighter leading-[0.85] text-slate-900 uppercase"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              TOEIC Writing <br className="hidden sm:block" />
+              <span className="text-indigo-600">Simulations.</span>
+            </motion.h1>
+            
+            <div className="flex flex-col md:flex-row items-center gap-4 sm:gap-6">
+              <div className="h-0.5 w-12 bg-indigo-600"></div>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em]">Made by English Care Team</p>
+            </div>
+
+            <motion.p 
+              className="text-sm sm:text-base lg:text-lg text-slate-500 font-medium leading-relaxed max-w-2xl px-4 md:px-0"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.2 }}
+            >
+              Adaptive evaluation algorithms identify structural weaknesses in your written responses. 
+              Select a module below to begin your targeted assessment session.
+            </motion.p>
+          </div>
         </div>
-        
-        <motion.h1 
-          className="text-4xl md:text-6xl font-black tracking-tighter leading-[0.9] text-slate-900 mb-6"
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: 0.1 }}
-        >
-          TOEIC WRITING <br />
-          <span className="text-indigo-600 uppercase">TEST SIMULATION.</span>
-        </motion.h1>
-        <motion.p 
-          className="text-slate-400 text-[10px] font-black uppercase tracking-[0.3em] mb-8 mx-auto md:mx-0"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.15 }}
-        >
-          Made by English Committee
-        </motion.p>
-        <motion.p 
-          className="text-base md:text-lg text-slate-500 font-medium leading-relaxed max-w-xl mx-auto md:mx-0"
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: 0.2 }}
-        >
-          Adaptive evaluation algorithms identify structural weaknesses in your written responses. 
-          Select a module to begin targeted assessment.
-        </motion.p>
       </header>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -503,50 +796,51 @@ function TaskCard({ title, subtitle, description, icon, badge, badgeColor, time,
   return (
     <motion.button
       onClick={onClick}
-      initial={{ opacity: 0, scale: 0.98 }}
-      animate={{ opacity: 1, scale: 1 }}
+      initial={{ opacity: 0, y: 20 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true }}
       transition={{ delay }}
       className={cn(
-        "group relative flex flex-col bg-white border-2 rounded-2xl text-left overflow-hidden transition-all duration-500 hover:shadow-2xl",
+        "group relative flex flex-col bg-white border-2 rounded-3xl text-left overflow-hidden transition-all duration-500 hover:shadow-2xl hover:-translate-y-1",
         theme.border,
         theme.hoverBorder,
         theme.shadow
       )}
     >
-      <div className={cn("p-4 border-b flex justify-between items-center transition-colors duration-500", theme.light, theme.border)}>
+      <div className={cn("p-4 sm:p-5 border-b flex justify-between items-center transition-colors duration-500", theme.light, theme.border)}>
         <div className="flex items-center gap-3">
-          <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center text-white shadow-lg shadow-black/10", theme.iconBg)}>
+          <div className={cn("w-8 h-8 rounded-xl flex items-center justify-center text-white shadow-lg shadow-black/10", theme.iconBg)}>
             {icon}
           </div>
           <h2 className="font-black text-slate-800 uppercase text-[10px] tracking-widest">{title}. {subtitle}</h2>
         </div>
-        <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-tight", theme.accent)}>{badge}</span>
+        <span className={cn("px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-tight", theme.accent)}>{badge}</span>
       </div>
       
-      <div className="p-6 flex-1 flex flex-col">
+      <div className="p-6 sm:p-8 flex-1 flex flex-col">
         <div className="flex-1 space-y-4">
-          <p className="text-sm text-slate-600 font-bold leading-relaxed">
-            {description}
+          <p className="text-sm font-bold text-slate-600 leading-relaxed italic">
+            "{description}"
           </p>
           
           <div className="grid grid-cols-2 gap-3 mt-6">
-            <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 group-hover:bg-white transition-colors">
+            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 group-hover:bg-white transition-colors">
               <p className="text-[9px] text-slate-400 uppercase font-black tracking-widest mb-1 text-center">Time limit</p>
-              <p className="text-xs font-black text-slate-700 font-mono text-center">{time}</p>
+              <p className="text-sm font-black text-slate-700 font-mono text-center">{time}</p>
             </div>
-            <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 group-hover:bg-white transition-colors">
+            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 group-hover:bg-white transition-colors">
               <p className="text-[9px] text-slate-400 uppercase font-black tracking-widest mb-1 text-center">Weight</p>
-              <p className="text-xs font-black text-slate-700 text-center">33.3%</p>
+              <p className="text-sm font-black text-slate-700 text-center">33.3%</p>
             </div>
           </div>
         </div>
 
-        <div className="pt-6 mt-6 border-t border-slate-100">
+        <div className="pt-8 mt-8 border-t border-slate-100">
           <h3 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4">Competency Focus</h3>
-          <ul className="grid grid-cols-1 gap-2 text-[10px] text-slate-600 font-bold">
+          <ul className="grid grid-cols-1 gap-3 text-[10px] text-slate-600 font-bold">
             {scoring.map((item: string, i: number) => (
               <li key={i} className="flex items-center gap-3">
-                <span className={cn("w-1.5 h-1.5 rounded-full ring-2 ring-white", theme.marker)}></span>
+                <span className={cn("w-1.5 h-1.5 rounded-full ring-4 ring-slate-50", theme.marker)}></span>
                 {item}
               </li>
             ))}
@@ -555,7 +849,7 @@ function TaskCard({ title, subtitle, description, icon, badge, badgeColor, time,
       </div>
       
       <div className={cn(
-        "p-4 bg-slate-50 border-t flex items-center justify-between font-black text-[10px] uppercase tracking-widest transition-all duration-500",
+        "p-5 bg-slate-50 border-t flex items-center justify-between font-black text-[10px] uppercase tracking-widest transition-all duration-500",
         "group-hover:translate-y-0 text-slate-600 group-hover:bg-slate-900 group-hover:text-white",
         theme.border
       )}>
@@ -688,14 +982,29 @@ function formatTime(seconds: number) {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-function Part1Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMode, isRealTest }: { onFinish: () => void, onShowSummary: () => void, setShowExitConfirm: (val: boolean) => void, setModalMode: (val: 'abandon' | 'dashboard') => void, isRealTest?: boolean }) {
-  const questions = isRealTest ? REAL_TEST_PART1 : PART1_QUESTIONS;
+function shuffleArray<T>(array: T[]): T[] {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+function Part1Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMode, isRealTest }: { onFinish: (results?: (AIResult | null)[]) => void, onShowSummary: () => void, setShowExitConfirm: (val: boolean) => void, setModalMode: (val: 'abandon' | 'dashboard' | 'retry') => void, isRealTest?: boolean }) {
+  // Select 5 random questions from the pool for variety across sessions
+  const [questions] = useState(() => {
+    const pool = isRealTest ? REAL_TEST_PART1 : PART1_QUESTIONS;
+    return shuffleArray(pool).slice(0, 5);
+  });
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<string[]>(new Array(questions.length).fill(''));
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [results, setResults] = useState<(AIResult | null)[]>(new Array(questions.length).fill(null));
   const [showSummary, setShowSummary] = useState(false);
   const [timeLeft, setTimeLeft] = useState(480); // 8 minutes total
+  const [copyAttempted, setCopyAttempted] = useState(false);
+  const [pasteAttempted, setPasteAttempted] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -778,28 +1087,56 @@ function Part1Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
   if (showSummary) {
     return <Summary 
       results={results} 
+      isRealTest={isRealTest}
+      onRetry={() => {
+        setModalMode('retry');
+        setShowExitConfirm(true);
+      }}
       onBack={() => {
-        if (isRealTest) {
-          onFinish();
-        } else {
-          setModalMode('dashboard');
-          setShowExitConfirm(true);
-        }
+        onFinish(results);
       }} 
       ctaLabel={isRealTest ? "CONTINUE TO NEXT PART" : "Acknowledge & Close Report"}
     />;
   }
+
+  const handleFinishAction = (e: React.ClipboardEvent | React.MouseEvent) => {
+    if (isRealTest) {
+      e.preventDefault();
+      if (e.type === 'paste') {
+        setPasteAttempted(true);
+        setTimeout(() => setPasteAttempted(false), 3000);
+      } else {
+        setCopyAttempted(true);
+        setTimeout(() => setCopyAttempted(false), 3000);
+      }
+    }
+  };
 
   return (
     <div className="space-y-6">
       {isEvaluating && <LoadingOverlay />}
       <div className="flex items-center justify-between">
         <ExerciseBackButton onClick={() => { setModalMode('abandon'); setShowExitConfirm(true); }} />
-        <div className="bg-slate-900 px-6 py-3 rounded-xl border border-slate-700 shadow-2xl flex items-center gap-3">
-          <Timer className={cn("w-4 h-4", timeLeft < 60 ? "text-red-500 animate-pulse" : "text-indigo-400")} />
-          <span className={cn("text-xl font-black font-mono tracking-tighter", timeLeft < 60 ? "text-red-500" : "text-white")}>
-            {formatTime(timeLeft)}
-          </span>
+        <div className="flex items-center gap-4">
+          <AnimatePresence>
+            {(copyAttempted || pasteAttempted) && (
+              <motion.div 
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 20 }}
+                className="bg-red-500 text-white text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded shadow-lg flex items-center gap-2"
+              >
+                <XCircle className="w-3 h-3" />
+                {pasteAttempted ? "you can't paste text here" : "you can't copy this text"}
+              </motion.div>
+            )}
+          </AnimatePresence>
+          <div className="bg-slate-900 px-6 py-3 rounded-xl border border-slate-700 shadow-2xl flex items-center gap-3">
+            <Timer className={cn("w-4 h-4", timeLeft < 60 ? "text-red-500 animate-pulse" : "text-indigo-400")} />
+            <span className={cn("text-xl font-black font-mono tracking-tighter", timeLeft < 60 ? "text-red-500" : "text-white")}>
+              {formatTime(timeLeft)}
+            </span>
+          </div>
         </div>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-start">
@@ -811,7 +1148,17 @@ function Part1Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
           </div>
           <div className="p-4">
             <div className="aspect-video bg-slate-200 rounded overflow-hidden border border-slate-200 flex items-center justify-center">
-               <img src={currentQuestion.imageUrl} alt="TOEIC Image" className="w-full h-full object-contain" />
+               <img 
+                 src={currentQuestion.imageUrl} 
+                 alt="TOEIC Image" 
+                 className="w-full h-full object-contain" 
+                 referrerPolicy="no-referrer"
+                 onError={(e) => {
+                   const img = e.currentTarget;
+                   img.src = `https://placehold.co/800x450/e2e8f0/64748b?text=Image+Unavailable`;
+                   img.onerror = null; // Prevent infinite loop
+                 }}
+               />
             </div>
           </div>
           <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-wrap gap-2">
@@ -826,7 +1173,7 @@ function Part1Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
 
       <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-6 sm:p-8 space-y-8">
         <div className="space-y-2">
-          <div className="text-[10px] uppercase tracking-widest font-black text-slate-400">Response Console • Q{index + 1}/05</div>
+          <div className="text-[10px] uppercase tracking-widest font-black text-slate-400">Response Console • Q{(index + 1).toString().padStart(2, '0')}/{questions.length.toString().padStart(2, '0')}</div>
           <h2 className="text-2xl sm:text-3xl font-black tracking-tighter text-slate-800 leading-none">Describe Image</h2>
           <p className="text-xs text-slate-500 font-bold leading-relaxed">System requires exact keyword inclusion within a single syntactically correct sentence.</p>
         </div>
@@ -838,6 +1185,8 @@ function Part1Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
             next[index] = e.target.value;
             setAnswers(next);
           }}
+          onPaste={handleFinishAction}
+          onCopy={handleFinishAction}
           className="w-full h-32 p-5 bg-slate-50 border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-all resize-none font-bold text-sm tracking-tight placeholder:text-slate-300"
           placeholder="ENTER SENTENCE DATA..."
         />
@@ -848,7 +1197,7 @@ function Part1Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
             disabled={!answers[index].trim() || isEvaluating}
             className="w-full sm:w-auto px-8 py-3 bg-indigo-600 text-white rounded font-bold text-[10px] uppercase tracking-widest shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all disabled:opacity-20 flex items-center justify-center gap-3"
           >
-            {isEvaluating ? <Loader2 className="w-4 h-4 animate-spin" /> : index === PART1_QUESTIONS.length - 1 ? "FINISH TASK" : "NEXT QUESTION"}
+            {isEvaluating ? <Loader2 className="w-4 h-4 animate-spin" /> : index === questions.length - 1 ? "FINISH TASK" : "NEXT QUESTION"}
           </button>
         </div>
       </div>
@@ -857,8 +1206,19 @@ function Part1Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
   );
 }
 
-function Part2Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMode, isRealTest }: { onFinish: () => void, onShowSummary: () => void, setShowExitConfirm: (val: boolean) => void, setModalMode: (val: 'abandon' | 'dashboard') => void, isRealTest?: boolean }) {
-  const questions = isRealTest ? REAL_TEST_PART2 : PART2_QUESTIONS;
+function Part2Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMode, isRealTest }: { onFinish: (results?: (AIResult | null)[]) => void, onShowSummary: () => void, setShowExitConfirm: (val: boolean) => void, setModalMode: (val: 'abandon' | 'dashboard' | 'retry') => void, isRealTest?: boolean }) {
+  // Select 1 business and 1 personal email from the pool
+  const [questions] = useState(() => {
+    const pool = isRealTest ? REAL_TEST_PART2 : PART2_QUESTIONS;
+    const businessPool = pool.filter(q => q.type === 'business');
+    const personalPool = pool.filter(q => q.type === 'personal');
+    
+    const businessTask = shuffleArray(businessPool)[0];
+    const personalTask = shuffleArray(personalPool)[0];
+    
+    // Default to business first or personal first randomly
+    return Math.random() > 0.5 ? [businessTask, personalTask] : [personalTask, businessTask];
+  });
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<string[]>(new Array(questions.length).fill(''));
   const [isEvaluating, setIsEvaluating] = useState(false);
@@ -866,6 +1226,7 @@ function Part2Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
   const [showSummary, setShowSummary] = useState(false);
   const [timeLeft, setTimeLeft] = useState(600); // 10 minutes per task
   const [copyAttempted, setCopyAttempted] = useState(false);
+  const [pasteAttempted, setPasteAttempted] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -953,23 +1314,28 @@ function Part2Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
   if (showSummary) {
     return <Summary 
       results={results} 
+      isRealTest={isRealTest}
+      onRetry={() => {
+        setModalMode('retry');
+        setShowExitConfirm(true);
+      }}
       onBack={() => {
-        if (isRealTest) {
-          onFinish();
-        } else {
-          setModalMode('dashboard');
-          setShowExitConfirm(true);
-        }
+        onFinish(results);
       }} 
       ctaLabel={isRealTest ? "CONTINUE TO NEXT PART" : "Acknowledge & Close Report"}
     />;
   }
 
-  const handleCopyProtection = (e: React.ClipboardEvent | React.MouseEvent) => {
+  const handleFinishAction = (e: React.ClipboardEvent | React.MouseEvent) => {
     if (isRealTest) {
       e.preventDefault();
-      setCopyAttempted(true);
-      setTimeout(() => setCopyAttempted(false), 3000);
+      if (e.type === 'paste') {
+        setPasteAttempted(true);
+        setTimeout(() => setPasteAttempted(false), 3000);
+      } else {
+        setCopyAttempted(true);
+        setTimeout(() => setCopyAttempted(false), 3000);
+      }
     }
   };
 
@@ -980,7 +1346,7 @@ function Part2Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
         <ExerciseBackButton onClick={() => { setModalMode('abandon'); setShowExitConfirm(true); }} />
         <div className="flex items-center gap-4">
           <AnimatePresence>
-            {copyAttempted && (
+            {(copyAttempted || pasteAttempted) && (
               <motion.div 
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
@@ -988,7 +1354,7 @@ function Part2Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
                 className="bg-red-500 text-white text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded shadow-lg flex items-center gap-2"
               >
                 <XCircle className="w-3 h-3" />
-                you can't copy this text
+                {pasteAttempted ? "you can't paste text here" : "you can't copy this text"}
               </motion.div>
             )}
           </AnimatePresence>
@@ -1005,12 +1371,17 @@ function Part2Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
         <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
           <div className="bg-slate-100 p-4 border-b border-slate-200 flex justify-between items-center">
             <h2 className="font-bold text-slate-500 uppercase text-[10px] tracking-widest">Incoming Transmission</h2>
-            <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase">Email Task</span>
+            <span className={cn(
+              "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
+              currentQuestion.type === 'business' ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700"
+            )}>
+              {currentQuestion.type} Task
+            </span>
           </div>
           <div className="p-4 sm:p-6">
             <div 
-              onCopy={handleCopyProtection}
-              onContextMenu={handleCopyProtection}
+              onCopy={handleFinishAction}
+              onContextMenu={handleFinishAction}
               className={cn(
                 "bg-blue-50/50 border border-blue-100 p-4 sm:p-6 rounded whitespace-pre-wrap font-bold text-slate-700 italic leading-relaxed text-xs h-64 overflow-y-auto pr-4 custom-scrollbar",
                 isRealTest && "select-none"
@@ -1033,9 +1404,14 @@ function Part2Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
 
       <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-6 sm:p-8 space-y-8">
         <div className="space-y-2">
-          <div className="text-[10px] uppercase tracking-widest font-black text-slate-400">Response Console • E0{index + 1}/02</div>
+          <div className="text-[10px] uppercase tracking-widest font-black text-slate-400">Response Console • E{(index + 1).toString().padStart(2, '0')}/{questions.length.toString().padStart(2, '0')}</div>
           <h2 className="text-2xl sm:text-3xl font-black tracking-tighter text-slate-800 leading-none">Draft Response</h2>
-          <p className="text-xs text-slate-500 font-bold leading-relaxed">Synthesize a professional response maintaining business formal tone and addressing all constraints.</p>
+          <p className="text-xs text-slate-500 font-bold leading-relaxed">
+            {currentQuestion.type === 'business' 
+              ? "Synthesize a professional response maintaining business formal tone and addressing all constraints."
+              : "Craft an informal yet detailed personal response that addresses all the specific points mentioned."
+            }
+          </p>
         </div>
 
         <textarea 
@@ -1045,6 +1421,8 @@ function Part2Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
             next[index] = e.target.value;
             setAnswers(next);
           }}
+          onCopy={handleFinishAction}
+          onPaste={handleFinishAction}
           className="w-full h-64 sm:h-80 p-5 bg-slate-50 border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-all resize-none font-bold text-sm tracking-tight placeholder:text-slate-300 custom-scrollbar"
           placeholder="DEAR CONTACT, ..."
         />
@@ -1064,13 +1442,18 @@ function Part2Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
   );
 }
 
-function Part3Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMode, isRealTest }: { onFinish: () => void, onShowSummary: () => void, setShowExitConfirm: (val: boolean) => void, setModalMode: (val: 'abandon' | 'dashboard') => void, isRealTest?: boolean }) {
-  const currentQuestion = isRealTest ? REAL_TEST_PART3[0] : PART3_QUESTIONS[0];
+function Part3Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMode, isRealTest }: { onFinish: (results?: (AIResult | null)[]) => void, onShowSummary: () => void, setShowExitConfirm: (val: boolean) => void, setModalMode: (val: 'abandon' | 'dashboard' | 'retry') => void, isRealTest?: boolean }) {
+  // Select 1 random topic from the pool for variety across sessions
+  const [currentQuestion] = useState(() => {
+    const pool = isRealTest ? REAL_TEST_PART3 : PART3_QUESTIONS;
+    return shuffleArray(pool)[0];
+  });
   const [answer, setAnswer] = useState('');
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [result, setResult] = useState<AIResult | null>(null);
   const [timeLeft, setTimeLeft] = useState(1800); // 30 minutes
   const [copyAttempted, setCopyAttempted] = useState(false);
+  const [pasteAttempted, setPasteAttempted] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -1104,24 +1487,29 @@ function Part3Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
     }
   };
 
-  const handleCopyProtection = (e: React.ClipboardEvent | React.MouseEvent) => {
+  const handleFinishAction = (e: React.ClipboardEvent | React.MouseEvent) => {
     if (isRealTest) {
       e.preventDefault();
-      setCopyAttempted(true);
-      setTimeout(() => setCopyAttempted(false), 3000);
+      if (e.type === 'paste') {
+        setPasteAttempted(true);
+        setTimeout(() => setPasteAttempted(false), 3000);
+      } else {
+        setCopyAttempted(true);
+        setTimeout(() => setCopyAttempted(false), 3000);
+      }
     }
   };
 
   if (result) {
     return <Summary 
       results={[result]} 
+      isRealTest={isRealTest}
+      onRetry={() => {
+        setModalMode('retry');
+        setShowExitConfirm(true);
+      }}
       onBack={() => {
-        if (isRealTest) {
-          onFinish();
-        } else {
-          setModalMode('dashboard');
-          setShowExitConfirm(true);
-        }
+        onFinish([result]);
       }} 
       ctaLabel={isRealTest ? "FINISH THE TEST" : "Acknowledge & Close Report"}
     />;
@@ -1135,7 +1523,7 @@ function Part3Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
       <div className="flex items-center justify-between">
         <ExerciseBackButton onClick={() => { setModalMode('abandon'); setShowExitConfirm(true); }} />
         <AnimatePresence>
-          {copyAttempted && (
+          {(copyAttempted || pasteAttempted) && (
             <motion.div 
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
@@ -1143,7 +1531,7 @@ function Part3Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
               className="bg-red-500 text-white text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded shadow-lg flex items-center gap-2"
             >
               <XCircle className="w-3 h-3" />
-              you can't copy this text
+              {pasteAttempted ? "you can't paste text here" : "you can't copy this text"}
             </motion.div>
           )}
         </AnimatePresence>
@@ -1175,8 +1563,8 @@ function Part3Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
           "bg-white border-l-4 border-amber-400 p-6 sm:p-8 border border-slate-200 rounded shadow-sm",
           isRealTest && "select-none"
         )}
-        onCopy={handleCopyProtection}
-        onContextMenu={handleCopyProtection}
+        onCopy={handleFinishAction}
+        onContextMenu={handleFinishAction}
         >
           <p className="text-[10px] text-amber-600 font-black uppercase mb-2 tracking-widest">Essay Prompt Context</p>
           <h3 className="text-lg sm:text-xl font-bold tracking-tight leading-relaxed text-slate-800">{currentQuestion.topic}</h3>
@@ -1192,6 +1580,8 @@ function Part3Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
           <textarea 
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
+            onCopy={handleFinishAction}
+            onPaste={handleFinishAction}
             className="w-full h-96 sm:h-[500px] p-6 sm:p-8 bg-white border-none focus:ring-0 transition-all resize-none font-bold text-sm sm:text-base leading-relaxed custom-scrollbar text-slate-700 placeholder:text-slate-200"
             placeholder="ENTER ARGUMENT TEXT DATA..."
           />
@@ -1219,8 +1609,111 @@ function Part3Exercise({ onFinish, onShowSummary, setShowExitConfirm, setModalMo
   );
 }
 
-function Summary({ results, onBack, ctaLabel }: { results: (AIResult | null)[], onBack: () => void, ctaLabel?: string }) {
-  const averageScore = results.reduce((acc, curr) => acc + (curr?.score || 0), 0) / results.filter(r => r !== null).length;
+function ResultCard({ res, index, sessionPrefix }: { res: AIResult | null, index: number, sessionPrefix?: number }) {
+  if (!res) return null;
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 15 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.1 }}
+      className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden"
+    >
+      <div className="bg-slate-50 p-4 sm:p-6 border-b border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+          Analysis • {sessionPrefix ? `S${sessionPrefix} ` : ''}Task {index + 1}
+        </h3>
+        <div className="px-4 py-1.5 bg-indigo-600 rounded text-white font-black text-xs font-mono w-full sm:w-auto text-center">
+          SCORE: {res.score}/5.0
+        </div>
+      </div>
+
+      <div className="p-6 sm:p-10 space-y-8 sm:space-y-10">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 sm:gap-10">
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-indigo-600">
+              <CheckCircle2 className="w-4 h-4" />
+              Structure Analysis
+            </div>
+            <div className="text-xs font-bold leading-relaxed text-slate-600 bg-slate-50 p-5 border-l-4 border-indigo-500 rounded-r">
+              {res.grammarFeedback}
+            </div>
+          </div>
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-indigo-600">
+              <Award className="w-4 h-4" />
+              Lexical Efficiency
+            </div>
+            <div className="text-xs font-bold leading-relaxed text-slate-600 bg-slate-50 p-5 border-l-4 border-indigo-500 rounded-r">
+              {res.vocabularyFeedback}
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-10 border-t border-slate-100">
+          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-400 mb-6">
+            <BookOpen className="w-4 h-4" />
+            Strategic Feedback
+          </div>
+          <div className="prose prose-slate prose-xs max-w-none text-slate-700 font-bold leading-relaxed">
+            <Markdown>{res.generalFeedback}</Markdown>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+function Summary({ results, onBack, onRetry, ctaLabel, isRealTest }: { results: (AIResult | null)[], onBack: () => void, onRetry?: () => void, ctaLabel?: string, isRealTest?: boolean }) {
+  const filteredResults = results.filter(r => r !== null) as AIResult[];
+  const averageScore = filteredResults.length > 0 
+    ? filteredResults.reduce((acc, curr) => acc + curr.score, 0) / filteredResults.length
+    : 0;
+
+  const renderContent = () => {
+    if (!isRealTest) {
+      return results.map((res, i) => (
+        <ResultCard key={i} res={res} index={i} />
+      ));
+    }
+
+    const part1Results = results.slice(0, 5);
+    const part2Results = results.slice(5, 7);
+    const part3Results = results.slice(7, 8);
+
+    const sessions = [
+      { name: "Session 1 • Visual Description", results: part1Results },
+      { name: "Session 2 • Email Response", results: part2Results },
+      { name: "Session 3 • Opinion Essay", results: part3Results }
+    ];
+
+    return (
+      <div className="space-y-12 sm:space-y-16">
+        {sessions.map((session, sIdx) => {
+          const hasResults = session.results.some(r => r !== null);
+          if (!hasResults) return null;
+
+          return (
+            <div key={sIdx} className="space-y-8">
+              <div className="flex items-center gap-6">
+                <div className="h-px bg-slate-200 flex-1" />
+                <div className="flex flex-col items-center gap-2">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-600 px-6 py-2 bg-indigo-50 rounded-full border border-indigo-100 shadow-sm">
+                    {session.name}
+                  </span>
+                </div>
+                <div className="h-px bg-slate-200 flex-1" />
+              </div>
+              <div className="space-y-6">
+                {session.results.map((res, i) => (
+                  <ResultCard key={i} res={res} index={i} sessionPrefix={sIdx + 1} />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
 
   return (
     <div className="max-w-5xl mx-auto space-y-8 sm:space-y-12 pb-24">
@@ -1235,63 +1728,25 @@ function Summary({ results, onBack, ctaLabel }: { results: (AIResult | null)[], 
       </div>
 
       <div className="space-y-6 sm:space-y-8">
-        {results.map((res, i) => (
-          <motion.div 
-            key={i}
-            initial={{ opacity: 0, y: 15 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.1 }}
-            className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden"
-          >
-            <div className="bg-slate-50 p-4 sm:p-6 border-b border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-4">
-              <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Analysis • Task {i + 1}</h3>
-              <div className="px-4 py-1.5 bg-indigo-600 rounded text-white font-black text-xs font-mono w-full sm:w-auto text-center">
-                SCORE: {res?.score}/5.0
-              </div>
-            </div>
-
-            <div className="p-6 sm:p-10 space-y-8 sm:space-y-10">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 sm:gap-10">
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-indigo-600">
-                    <CheckCircle2 className="w-4 h-4" />
-                    Structure Analysis
-                  </div>
-                  <div className="text-xs font-bold leading-relaxed text-slate-600 bg-slate-50 p-5 border-l-4 border-indigo-500 rounded-r">
-                    {res?.grammarFeedback}
-                  </div>
-                </div>
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-indigo-600">
-                    <Award className="w-4 h-4" />
-                    Lexical Efficiency
-                  </div>
-                  <div className="text-xs font-bold leading-relaxed text-slate-600 bg-slate-50 p-5 border-l-4 border-indigo-500 rounded-r">
-                    {res?.vocabularyFeedback}
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-10 border-t border-slate-100">
-                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-400 mb-6">
-                  <BookOpen className="w-4 h-4" />
-                  Strategic Feedback
-                </div>
-                <div className="prose prose-slate prose-xs max-w-none text-slate-700 font-bold leading-relaxed">
-                  <Markdown>{res?.generalFeedback}</Markdown>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        ))}
+        {renderContent()}
       </div>
 
-      <button 
-        onClick={onBack}
-        className="w-full py-5 bg-slate-900 text-white rounded font-bold text-xs uppercase tracking-widest shadow-xl shadow-slate-200 hover:bg-slate-800 transition-all text-center"
-      >
-        {ctaLabel || "Acknowledge & Close Report"}
-      </button>
+      <div className="flex flex-col sm:flex-row gap-4">
+        {onRetry && !isRealTest && (
+          <button 
+            onClick={onRetry}
+            className="flex-1 py-5 bg-indigo-600 text-white rounded font-bold text-xs uppercase tracking-widest shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all text-center"
+          >
+            Retry Task
+          </button>
+        )}
+        <button 
+          onClick={onBack}
+          className="flex-1 py-5 bg-slate-900 text-white rounded font-bold text-xs uppercase tracking-widest shadow-xl shadow-slate-200 hover:bg-slate-800 transition-all text-center"
+        >
+          {ctaLabel || "Acknowledge & Close Report"}
+        </button>
+      </div>
     </div>
   );
 }

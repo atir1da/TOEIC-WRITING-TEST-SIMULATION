@@ -1,28 +1,77 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Deny all by default
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
+    // --- Hardened Global Helpers ---
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
     }
 
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- 1. Users Collection ---
     match /users/{userId} {
-      allow read: if isSignedIn() && request.auth.uid == userId;
-      allow create: if isSignedIn() && request.auth.uid == userId;
-      allow update: if isSignedIn() && request.auth.uid == userId;
+      // Identity check for reading own profile
+      allow get: if request.auth != null && request.auth.uid == userId;
+      
+      function isValidUser(data) {
+        return data.uid is string && data.uid.size() <= 128 &&
+               data.email is string && data.email.size() <= 256 &&
+               data.displayName is string && data.displayName.size() <= 256 &&
+               data.englishLevel in ['Basic', 'Intermediate', 'Advanced'] &&
+               data.createdAt is timestamp;
+      }
+
+      allow create: if request.auth != null && request.auth.token.email_verified == true && 
+                       request.auth.uid == userId && 
+                       isValidUser(incoming()) &&
+                       incoming().uid == request.auth.uid &&
+                       incoming().keys().hasAll(['uid', 'email', 'displayName', 'englishLevel', 'createdAt']) &&
+                       (incoming().keys().size() == 5 || incoming().keys().size() == 6);
+
+      allow update: if request.auth != null && request.auth.token.email_verified == true && 
+                       request.auth.uid == userId && (
+        // Action: Update Profile Info
+        (incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'englishLevel'])) &&
+        ( !('displayName' in incoming()) || (incoming().displayName is string && incoming().displayName.size() <= 256) ) &&
+        ( !('englishLevel' in incoming()) || (incoming().englishLevel in ['Basic', 'Intermediate', 'Advanced']) )
+      );
     }
 
+    // --- 2. Attempts Collection ---
     match /attempts/{attemptId} {
+      function isValidAttempt(data) {
+        return data.userId is string && data.userId == request.auth.uid &&
+               data.part in ['PART1', 'PART2', 'PART3'] &&
+               data.score is number && data.score >= 0 && data.score <= 5 &&
+               data.timestamp is timestamp;
+      }
+
       allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      
+      allow create: if isVerified() && 
+                       incoming().userId == request.auth.uid &&
+                       isValidAttempt(incoming()) &&
+                       incoming().keys().hasAll(['userId', 'part', 'score', 'timestamp']) &&
+                       incoming().keys().size() == 4;
+    }
+
+    // Default deny as fallback at the end
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
