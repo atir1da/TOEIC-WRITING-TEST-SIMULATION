@@ -23,22 +23,25 @@ export function AuthPage() {
       const result = await signInWithPopup(auth, provider);
       const user = result.user;
       
-      // Save user to firestore if not exists
+      // Save user to firestore if not exists (NON-BLOCKING)
       const userRef = doc(db, 'users', user.uid);
-      const userDoc = await getDoc(userRef);
-      if (!userDoc.exists()) {
-        const userData = {
-          uid: user.uid,
-          email: user.email,
-          displayName: user.displayName || user.email?.split('@')[0] || 'User',
-          createdAt: serverTimestamp()
-        };
-        try {
+      
+      // We don't await the firestore part to prevent blocking the UI
+      // but we still want to handle it if possible
+      getDoc(userRef).then(async (userDoc) => {
+        if (!userDoc.exists()) {
+          const userData = {
+            uid: user.uid,
+            email: user.email,
+            displayName: user.displayName || user.email?.split('@')[0] || 'User',
+            createdAt: serverTimestamp()
+          };
           await setDoc(userRef, userData);
-        } catch (err) {
-          handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
         }
-      }
+      }).catch(err => {
+        console.warn("Non-critical Firestore profile sync error:", err);
+      });
+
     } catch (err: any) {
       console.error("Auth Error:", err);
       let message = "An unexpected error occurred during authentication.";
