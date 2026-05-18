@@ -3,7 +3,13 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged as fir
 import { getFirestore, doc, getDocFromServer, collection, addDoc, query, where, getDocs, serverTimestamp, Timestamp, orderBy, deleteDoc, writeBatch } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
+const appConfig = {
+  ...firebaseConfig,
+  // Allow overriding the authDomain for custom production domains (Vercel)
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain
+};
+
+const app = initializeApp(appConfig);
 export const auth = getAuth(app);
 export { firebaseOnAuthStateChanged as onAuthStateChanged };
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
