@@ -1,27 +1,62 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged as firebaseOnAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer, collection, addDoc, query, where, getDocs, serverTimestamp, Timestamp, orderBy, deleteDoc, writeBatch } from 'firebase/firestore';
+import { 
+  getAuth, 
+  initializeAuth,
+  browserLocalPersistence,
+  browserPopupRedirectResolver,
+  GoogleAuthProvider, 
+  signInWithPopup, 
+  onAuthStateChanged as firebaseOnAuthStateChanged, 
+  User 
+} from 'firebase/auth';
+import { getFirestore, initializeFirestore, doc, getDocFromServer, collection, addDoc, query, where, getDocs, serverTimestamp, Timestamp, orderBy, deleteDoc, writeBatch } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+
+const CUSTOM_AUTH_DOMAIN = import.meta.env.VITE_FIREBASE_AUTH_DOMAIN;
 
 const appConfig = {
   ...firebaseConfig,
-  // Allow overriding the authDomain for custom production domains (Vercel)
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain
+  // Force custom authDomain if provided in env, else fallback to Firebase default
+  authDomain: (CUSTOM_AUTH_DOMAIN && CUSTOM_AUTH_DOMAIN !== '') 
+    ? CUSTOM_AUTH_DOMAIN 
+    : firebaseConfig.authDomain
 };
 
 const app = initializeApp(appConfig);
-export const auth = getAuth(app);
+
+// Using initializeAuth for more explicit control over the auth domain and resolvers
+export const auth = initializeAuth(app, {
+  persistence: browserLocalPersistence,
+  popupRedirectResolver: browserPopupRedirectResolver,
+});
+
+if (import.meta.env.DEV) {
+  console.log("Firebase Auth Domain active:", appConfig.authDomain);
+}
+
 export { firebaseOnAuthStateChanged as onAuthStateChanged };
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+// Use initializeFirestore with forceLongPolling to fix connectivity issues in some environments
+export const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true,
+}, firebaseConfig.firestoreDatabaseId);
 
 const googleProvider = new GoogleAuthProvider();
+// Force account selection for a better user experience
+googleProvider.setCustomParameters({
+  prompt: 'select_account'
+});
 
 export const signInWithGoogle = async () => {
   try {
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
-  } catch (error) {
-    console.error("Error signing in with Google", error);
+  } catch (error: any) {
+    // If the user closed the popup, we don't want to treat it as a hard error in the UI
+    if (error.code === 'auth/popup-closed-by-user') {
+      return null;
+    }
+    console.error("Error signing in with Google:", error);
     throw error;
   }
 };

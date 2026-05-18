@@ -31,7 +31,11 @@ export function AuthPage({ onLogin }: { onLogin: (user: { displayName: string, e
     setError('');
     try {
       const user = await signInWithGoogle();
-      if (!user) throw new Error("No user found after login");
+      if (!user) {
+        // Sign-in was cancelled by closing the popup
+        setLoading(false);
+        return;
+      }
 
       const userData = {
         displayName: user.displayName || 'Learner',
