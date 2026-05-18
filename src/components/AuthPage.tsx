@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Award, ChevronDown, Check } from 'lucide-react';
+import { Award, ChevronDown, Check, Chrome } from 'lucide-react';
 import { Logo } from './Logo';
 import { cn } from '../lib/utils';
+import { signInWithGoogle } from '../lib/firebase';
 
 interface EnglishLevel {
   id: string;
@@ -17,35 +18,38 @@ const ENGLISH_LEVELS: EnglishLevel[] = [
   { id: 'Advanced', label: 'Advanced Level', description: 'Fluent professional proficiency', color: 'bg-rose-500' },
 ];
 
-export function AuthPage({ onLogin }: { onLogin: (user: { displayName: string, englishLevel: string }) => void }) {
+export function AuthPage({ onLogin }: { onLogin: (user: { displayName: string, englishLevel: string, uid: string, email?: string }) => void }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [name, setName] = useState('');
   const [englishLevel, setEnglishLevel] = useState('Intermediate');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
   const selectedLevel = ENGLISH_LEVELS.find(l => l.id === englishLevel) || ENGLISH_LEVELS[1];
 
-  const handleEnter = () => {
-    if (!name.trim()) {
-      setError("Please enter your name first.");
-      return;
-    }
-
+  const handleGoogleLogin = async () => {
     setLoading(true);
-    // Simulate a brief loading state for a smoother transition
-    setTimeout(() => {
+    setError('');
+    try {
+      const user = await signInWithGoogle();
+      if (!user) throw new Error("No user found after login");
+
       const userData = {
-        displayName: name.trim(),
-        englishLevel: englishLevel
+        displayName: user.displayName || 'Learner',
+        englishLevel: englishLevel,
+        uid: user.uid,
+        email: user.email || undefined
       };
       
-      // Store in localStorage for persistence
-      localStorage.setItem('toeic_user', JSON.stringify(userData));
+      // Store in localStorage for level preference only
+      localStorage.setItem('toeic_level_pref', englishLevel);
       
       onLogin(userData);
+    } catch (e: any) {
+      console.error("Login Error:", e);
+      setError(e.message || "Failed to sign in with Google. Please try again.");
+    } finally {
       setLoading(false);
-    }, 800);
+    }
   };
 
   return (
@@ -105,16 +109,28 @@ export function AuthPage({ onLogin }: { onLogin: (user: { displayName: string, e
               </div>
             )}
 
-            <div className="space-y-4">
+            <div className="space-y-6">
               <div className="space-y-2">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Your Name</label>
-                <input 
-                  type="text" 
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Enter your full name"
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-4 text-white text-sm font-bold focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none placeholder:text-slate-600"
-                />
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-1">Examination profile</label>
+                <div className="bg-white/5 border border-white/10 rounded-xl px-5 py-6 text-center space-y-4">
+                  <p className="text-xs font-bold text-slate-300 leading-relaxed">
+                    Test isolation is now strictly enforced. Please sign in with your Google account to access your private simulation archive.
+                  </p>
+                  <button 
+                    onClick={handleGoogleLogin}
+                    disabled={loading}
+                    className="w-full bg-white text-slate-900 py-4 rounded-xl font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-xl shadow-white/5 disabled:opacity-50"
+                  >
+                    {loading ? (
+                      <div className="w-4 h-4 border-2 border-slate-900/10 border-t-slate-900 rounded-full animate-spin" />
+                    ) : (
+                      <>
+                        <Chrome className="w-4 h-4" />
+                        Sign in with Google
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -181,18 +197,10 @@ export function AuthPage({ onLogin }: { onLogin: (user: { displayName: string, e
               </div>
             </div>
 
-            <button 
-              onClick={handleEnter}
-              disabled={loading}
-              className="w-full bg-indigo-600 text-white py-5 rounded-xl font-black uppercase tracking-widest text-[11px] flex items-center justify-center gap-4 hover:bg-indigo-500 hover:scale-[1.02] transition-all active:scale-[0.98] shadow-2xl shadow-indigo-500/20"
-            >
-              {loading ? "Preparing Dashboard..." : "Enter to Dashboard"}
-            </button>
-
             <div className="pt-4 text-center space-y-4">
               <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest leading-relaxed">
-                Fast Access Enabled <br />
-                <span className="text-slate-600">No account required</span>
+                Secure Session Management <br />
+                <span className="text-slate-600">Isolated Test History</span>
               </p>
             </div>
           </div>

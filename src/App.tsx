@@ -20,10 +20,20 @@ import {
   LogOut,
   User as UserIcon,
   XCircle,
-  ShieldAlert
+  ShieldAlert,
+  Trash2
 } from 'lucide-react';
 import { AuthPage } from './components/AuthPage';
 import { TaskPart, AIResult, HistoryEntry } from './types';
+import { 
+  auth, 
+  saveHistory, 
+  fetchHistory, 
+  logout as firebaseLogout, 
+  onAuthStateChanged,
+  deleteHistoryEntry,
+  clearUserHistory
+} from './lib/firebase';
 import { 
   PART1_QUESTIONS, 
   PART2_QUESTIONS, 
@@ -40,6 +50,8 @@ import Markdown from 'react-markdown';
 interface UserProfile {
   displayName: string;
   englishLevel: string;
+  uid: string;
+  email?: string;
 }
 
 function LoadingOverlay({ message = "Loading Page" }: { message?: string }) {
@@ -127,14 +139,11 @@ export default function App() {
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [isRealTest, setIsRealTest] = useState(false);
   const [isShowingSummary, setIsShowingSummary] = useState(false);
-  const [modalMode, setModalMode] = useState<'abandon' | 'dashboard' | 'logout' | 'retry'>('abandon');
+  const [modalMode, setModalMode] = useState<'abandon' | 'dashboard' | 'logout' | 'retry' | 'clearHistory'>('abandon');
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [resetKey, setResetKey] = useState(0);
   const [isWindowFocused, setIsWindowFocused] = useState(true);
-  const [history, setHistory] = useState<HistoryEntry[]>(() => {
-    const stored = localStorage.getItem('toeic_history');
-    return stored ? JSON.parse(stored) : [];
-  });
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [fullTestResults, setFullTestResults] = useState<(AIResult | null)[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [selectedHistoryEntry, setSelectedHistoryEntry] = useState<HistoryEntry | null>(null);
@@ -165,39 +174,65 @@ export default function App() {
   }, [isRealTest, isStarted]);
 
   useEffect(() => {
-    // Check for local user profile on startup
-    const storedUser = localStorage.getItem('toeic_user');
-    if (storedUser) {
-      try {
-        setUserProfile(JSON.parse(storedUser));
-      } catch (e) {
-        console.error("Failed to parse local user:", e);
-        localStorage.removeItem('toeic_user');
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        const levelPref = localStorage.getItem('toeic_level_pref') || 'Intermediate';
+        setUserProfile({
+          uid: user.uid,
+          displayName: user.displayName || 'Learner',
+          email: user.email || undefined,
+          englishLevel: levelPref
+        });
+      } else {
+        setUserProfile(null);
       }
-    }
-    setAuthLoading(false);
+      setAuthLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (userProfile?.uid && !showHistory) {
+      const loadHistory = async () => {
+        const data = await fetchHistory(userProfile.uid);
+        if (data) setHistory(data as HistoryEntry[]);
+      };
+      loadHistory();
+    }
+  }, [userProfile?.uid, showHistory]);
 
   const handleLocalLogin = (profile: UserProfile) => {
     setUserProfile(profile);
   };
 
   const handleLogout = async () => {
-    localStorage.removeItem('toeic_user');
+    await firebaseLogout();
     setUserProfile(null);
     setCurrentPart(null);
     setIsStarted(false);
+    setHistory([]);
   };
 
-  const addHistoryEntry = (entry: Omit<HistoryEntry, 'id' | 'date'>) => {
-    const newEntry: HistoryEntry = {
-      ...entry,
-      id: Math.random().toString(36).substr(2, 9),
-      date: new Date().toISOString(),
-    };
-    const updatedHistory = [newEntry, ...history];
-    setHistory(updatedHistory);
-    localStorage.setItem('toeic_history', JSON.stringify(updatedHistory));
+  const addHistoryEntry = async (entry: Omit<HistoryEntry, 'id' | 'date'>) => {
+    if (!userProfile?.uid) return;
+
+    await saveHistory(userProfile.uid, entry);
+    // Refresh history
+    const data = await fetchHistory(userProfile.uid);
+    if (data) setHistory(data as HistoryEntry[]);
+  };
+
+  const handleDeleteHistoryEntry = async (id: string) => {
+    if (!userProfile?.uid) return;
+    await deleteHistoryEntry(id);
+    setHistory(prev => prev.filter(e => e.id !== id));
+  };
+
+  const handleClearHistory = async () => {
+    if (!userProfile?.uid) return;
+    await clearUserHistory(userProfile.uid);
+    setHistory([]);
   };
 
   const renderContent = () => {
@@ -207,6 +242,11 @@ export default function App() {
           history={history} 
           onClose={() => setShowHistory(false)} 
           onViewEntry={(entry) => setSelectedHistoryEntry(entry)}
+          onDeleteEntry={handleDeleteHistoryEntry}
+          onDeleteAll={() => {
+            setModalMode('clearHistory');
+            setShowExitConfirm(true);
+          }}
         />
       );
     }
@@ -287,7 +327,7 @@ export default function App() {
     }
   };
 
-  const handleFinish = (results?: (AIResult | null)[], isAbandon = false) => {
+  const handleFinish = async (results?: (AIResult | null)[], isAbandon = false) => {
     setIsShowingSummary(false);
     if (isRealTest) {
       if (isAbandon) {
@@ -306,7 +346,7 @@ export default function App() {
       } else {
         // Finishing Part 3
         const finalResults = results ? [...fullTestResults, ...results] : fullTestResults;
-        addHistoryEntry({
+        await addHistoryEntry({
           type: 'Full Test',
           part: 'ALL',
           results: finalResults
@@ -318,7 +358,7 @@ export default function App() {
       }
     } else {
       if (!isAbandon && results && currentPart) {
-        addHistoryEntry({
+        await addHistoryEntry({
           type: 'Module',
           part: currentPart,
           results
@@ -495,8 +535,8 @@ export default function App() {
 
       <main className="max-w-6xl mx-auto px-4 sm:px-8 py-6 sm:py-12 w-full overflow-x-hidden">
         {selectedHistoryEntry && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto pt-20 pb-10">
-            <div className="max-w-4xl w-full">
+          <div className="fixed inset-0 z-[100] flex justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto pt-20 pb-20">
+            <div className="max-w-4xl w-full h-fit">
               <Summary 
                 results={selectedHistoryEntry.results}
                 onBack={() => setSelectedHistoryEntry(null)}
@@ -529,6 +569,8 @@ export default function App() {
           } else if (modalMode === 'retry') {
             setResetKey(prev => prev + 1);
             setIsShowingSummary(false);
+          } else if (modalMode === 'clearHistory') {
+            handleClearHistory();
           } else {
             handleFinish(undefined, modalMode === 'abandon');
           }
@@ -538,12 +580,14 @@ export default function App() {
         title={
           modalMode === 'logout' ? "Sign Out?" :
           modalMode === 'retry' ? "Retry Task?" :
+          modalMode === 'clearHistory' ? "Clear All History?" :
           modalMode === 'abandon' ? (isRealTest ? "Abandon Real Test?" : "Abandon Session?") : 
           "Return to Dashboard?"
         }
         message={
           modalMode === 'logout' ? "Are you sure you want to sign out of your account?" :
           modalMode === 'retry' ? "Do you want to retry this module? Your current scores and feedback for this session will be reset." :
+          modalMode === 'clearHistory' ? "Are you sure you want to delete your entire performance archive? This action cannot be undone." :
           modalMode === 'abandon' 
             ? (isRealTest 
                 ? "A Full Real Test is currently active. If you exit now, all progress will be lost and your test result will not be saved. Do you want to abandon the test?" 
@@ -555,7 +599,19 @@ export default function App() {
   );
 }
 
-function HistoryView({ history, onClose, onViewEntry }: { history: HistoryEntry[], onClose: () => void, onViewEntry: (entry: HistoryEntry) => void }) {
+function HistoryView({ 
+  history, 
+  onClose, 
+  onViewEntry, 
+  onDeleteEntry, 
+  onDeleteAll 
+}: { 
+  history: HistoryEntry[], 
+  onClose: () => void, 
+  onViewEntry: (entry: HistoryEntry) => void,
+  onDeleteEntry: (id: string) => void,
+  onDeleteAll: () => void
+}) {
   return (
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
@@ -563,17 +619,19 @@ function HistoryView({ history, onClose, onViewEntry }: { history: HistoryEntry[
       exit={{ opacity: 0, y: 20 }}
       className="mb-12"
     >
-      <div className="flex items-center justify-between mb-8">
-        <div className="space-y-1">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 mb-8">
+        <div className="space-y-1 text-center sm:text-left">
           <div className="text-[10px] uppercase tracking-widest font-black text-indigo-600">Performance Archive</div>
           <h2 className="text-3xl font-black tracking-tighter text-slate-900 leading-none">Your History</h2>
         </div>
-        <button 
-          onClick={onClose}
-          className="px-6 py-3 bg-slate-100 hover:bg-slate-200 text-slate-900 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all"
-        >
-          Close History
-        </button>
+        <div className="flex items-center justify-center gap-3">
+          <button 
+            onClick={onClose}
+            className="px-6 py-3 bg-slate-900 text-white rounded-xl font-black text-[10px] uppercase tracking-widest transition-all hover:bg-slate-800 shadow-xl shadow-slate-200"
+          >
+            Close History
+          </button>
+        </div>
       </div>
 
       {history.length === 0 ? (
@@ -585,69 +643,92 @@ function HistoryView({ history, onClose, onViewEntry }: { history: HistoryEntry[
           <p className="text-slate-500 text-sm font-bold max-w-xs mx-auto">Complete your first module or real test to see your performance history here.</p>
         </div>
       ) : (
-        <div className="grid gap-4">
-          {history.map((entry) => (
-            <motion.div 
-              key={entry.id}
-              whileHover={{ x: 4 }}
-              className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-6 hover:border-indigo-200 transition-all cursor-pointer group"
-              onClick={() => onViewEntry(entry)}
-            >
-              <div className="flex items-center gap-6">
-                <div className={cn(
-                  "w-12 h-12 rounded-xl flex items-center justify-center shrink-0 shadow-lg",
-                  entry.type === 'Full Test' ? "bg-indigo-600 text-white shadow-indigo-100" : "bg-white text-indigo-600 border border-slate-100"
-                )}>
-                  {entry.type === 'Full Test' ? <Award className="w-6 h-6" /> : (
-                    entry.part === TaskPart.PART1 ? <PenTool className="w-6 h-6" /> :
-                    entry.part === TaskPart.PART2 ? <Mail className="w-6 h-6" /> :
-                    <FileText className="w-6 h-6" />
-                  )}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className={cn(
-                      "text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded",
-                      entry.type === 'Full Test' ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-600"
-                    )}>
-                      {entry.type}
-                    </span>
-                    {entry.part !== 'ALL' && (
-                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{entry.part}</span>
+        <div className="space-y-12">
+          <div className="grid gap-4">
+            {history.map((entry) => (
+              <motion.div 
+                key={entry.id}
+                whileHover={{ x: 4 }}
+                className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-6 hover:border-indigo-200 transition-all cursor-pointer group relative"
+                onClick={() => onViewEntry(entry)}
+              >
+                <div className="flex items-center gap-6">
+                  <div className={cn(
+                    "w-12 h-12 rounded-xl flex items-center justify-center shrink-0 shadow-lg",
+                    entry.type === 'Full Test' ? "bg-indigo-600 text-white shadow-indigo-100" : "bg-white text-indigo-600 border border-slate-100"
+                  )}>
+                    {entry.type === 'Full Test' ? <Award className="w-6 h-6" /> : (
+                      entry.part === TaskPart.PART1 ? <PenTool className="w-6 h-6" /> :
+                      entry.part === TaskPart.PART2 ? <Mail className="w-6 h-6" /> :
+                      <FileText className="w-6 h-6" />
                     )}
                   </div>
-                  <h4 className="text-lg font-black tracking-tight text-slate-900 leading-tight">
-                    {entry.type === 'Full Test' ? 'Full Assessment Session' : (
-                      entry.part === TaskPart.PART1 ? 'Visual Description' :
-                      entry.part === TaskPart.PART2 ? 'Email Response' :
-                      'Expressive Essay'
-                    )}
-                  </h4>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight mt-1">
-                    {new Date(entry.date).toLocaleDateString(undefined, { 
-                      year: 'numeric', 
-                      month: 'long', 
-                      day: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit'
-                    })}
-                  </p>
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={cn(
+                        "text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded",
+                        entry.type === 'Full Test' ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-600"
+                      )}>
+                        {entry.type}
+                      </span>
+                      {entry.part !== 'ALL' && (
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{entry.part}</span>
+                      )}
+                    </div>
+                    <h4 className="text-lg font-black tracking-tight text-slate-900 leading-tight">
+                      {entry.type === 'Full Test' ? 'Full Assessment Session' : (
+                        entry.part === TaskPart.PART1 ? 'Visual Description' :
+                        entry.part === TaskPart.PART2 ? 'Email Response' :
+                        'Expressive Essay'
+                      )}
+                    </h4>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight mt-1">
+                      {new Date(entry.date).toLocaleDateString(undefined, { 
+                        year: 'numeric', 
+                        month: 'long', 
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </p>
+                  </div>
                 </div>
-              </div>
 
-              <div className="flex items-center gap-8 justify-between sm:justify-end">
-                <div className="text-center">
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Avg Score</p>
-                  <p className="text-2xl font-black text-slate-900 tracking-tighter">
-                    {Math.round(entry.results.reduce((acc, r) => acc + (r?.score || 0), 0) / entry.results.length)}
-                  </p>
+                <div className="flex items-center gap-6 justify-between sm:justify-end">
+                  <div className="text-center">
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Avg Score</p>
+                    <p className="text-2xl font-black text-slate-900 tracking-tighter">
+                      {Math.round(entry.results.reduce((acc, r) => acc + (r?.score || 0), 0) / entry.results.length)}
+                    </p>
+                  </div>
+                  <div className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                    <ChevronRight className="w-5 h-5" />
+                  </div>
                 </div>
-                <div className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all">
-                  <ChevronRight className="w-5 h-5" />
-                </div>
-              </div>
-            </motion.div>
-          ))}
+
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteEntry(entry.id);
+                  }}
+                  className="absolute top-4 right-4 p-2 text-slate-300 hover:text-red-500 transition-colors"
+                  title="Delete record"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </motion.div>
+            ))}
+          </div>
+
+          <div className="flex justify-center pt-8 border-t border-slate-200">
+            <button 
+              onClick={onDeleteAll}
+              className="flex items-center gap-3 px-8 py-4 bg-red-50 text-red-600 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all shadow-sm border border-red-100"
+            >
+              <Trash2 className="w-4 h-4" />
+              Delete All History
+            </button>
+          </div>
         </div>
       )}
     </motion.div>

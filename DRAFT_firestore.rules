@@ -23,6 +23,7 @@ service cloud.firestore {
     match /history/{entryId} {
       function isValidHistory(data) {
         return data.userId == request.auth.uid &&
+               data.date is string &&
                data.type in ['Module', 'Full Test'] &&
                data.part is string &&
                data.results is list;

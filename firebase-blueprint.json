@@ -1,39 +1,26 @@
 {
   "entities": {
-    "users": {
-      "title": "User",
-      "description": "User profile and statistics",
+    "HistoryEntry": {
+      "title": "Test History Entry",
+      "description": "Represents a completed TOEIC writing task or full test.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string" },
-        "email": { "type": "string", "format": "email" },
-        "displayName": { "type": "string" },
-        "englishLevel": { "type": "string", "enum": ["Basic", "Intermediate", "Advanced"] },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "userId": { "type": "string", "description": "The unique ID of the user who took the test." },
+        "date": { "type": "string", "format": "date-time", "description": "Timestamp of completion." },
+        "type": { "type": "string", "enum": ["Module", "Full Test"] },
+        "part": { "type": "string", "description": "The task part or 'ALL' for full tests." },
+        "results": { 
+          "type": "array", 
+          "description": "List of evaluation results for each question."
+        }
       },
-      "required": ["uid", "email", "createdAt", "englishLevel"]
-    },
-    "attempts": {
-      "title": "Attempt",
-      "description": "Logs of user exercise attempts",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "part": { "type": "string", "enum": ["PART1", "PART2", "PART3"] },
-        "score": { "type": "number" },
-        "timestamp": { "type": "string", "format": "date-time" }
-      },
-      "required": ["userId", "part", "score", "timestamp"]
+      "required": ["userId", "date", "type", "part", "results"]
     }
   },
   "firestore": {
-    "/users/{userId}": {
-      "schema": "users",
-      "description": "User profile document"
-    },
-    "/attempts/{attemptId}": {
-      "schema": "attempts",
-      "description": "History of user exercises"
+    "history": {
+      "schema": "HistoryEntry",
+      "description": "Storage for user test results."
     }
   }
 }
